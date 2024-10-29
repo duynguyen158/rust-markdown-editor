@@ -8,6 +8,9 @@ actions!(
     [
         Backspace,
         Delete,
+        Enter,
+        Up,
+        Down,
         Left,
         Right,
         SelectLeft,
@@ -19,19 +22,48 @@ actions!(
     ]
 );
 
+struct TextCoord {
+    line: usize,
+    column: usize,
+}
+
+struct TextAreaRange {
+    start: TextCoord,
+    end: TextCoord,
+}
+
+impl TextAreaRange {
+    fn new(start: TextCoord, end: TextCoord) -> Self {
+        Self { start, end }
+    }
+
+    fn is_empty(&self) -> bool {
+        !(
+            // NOT empty when
+            // - start and end are on different lines
+            (self.start.line < self.end.line)
+            // - or start and end are on the same line and start is before end
+            || (self.start.line == self.end.line && self.start.column < self.end.column)
+        )
+    }
+}
+
 struct TextInput {
     focus_handle: FocusHandle,
     content: SharedString,
     placeholder: SharedString,
-    selected_range: Range<usize>,
+    // In textareas with multiple lines, a (continuous, multi-line) range can be expressed as, e.g., line 1, characters 5-last; line 2, characters 1-last; line 3, characters 1-3.
+    selected_range: TextAreaRange,
     selection_reversed: bool,
-    marked_range: Option<Range<usize>>,
+    // The underlined part of input text you get when, for example, typing in Vietnamese Telex (see: https://developer.mozilla.org/en-US/docs/Glossary/Input_method_editor)
+    marked_range: Option<TextAreaRange>,
     last_layout: Option<ShapedLine>,
     last_bounds: Option<Bounds<Pixels>>,
     is_selecting: bool,
 }
 
 impl TextInput {
+    /// Moves the cursor one position to the left.
     fn left(&mut self, _: &Left, cx: &mut ViewContext<Self>) {
         if self.selected_range.is_empty() {
             self.move_to(self.previous_boundary(self.cursor_offset()), cx);
@@ -40,6 +72,7 @@ impl TextInput {
         }
     }
 
+    /// Moves the cursor one position to the right.
     fn right(&mut self, _: &Right, cx: &mut ViewContext<Self>) {
         if self.selected_range.is_empty() {
             self.move_to(self.next_boundary(self.selected_range.end), cx);
@@ -48,27 +81,33 @@ impl TextInput {
         }
     }
 
+    /// Extends the selection one position to the left.
     fn select_left(&mut self, _: &SelectLeft, cx: &mut ViewContext<Self>) {
         self.select_to(self.previous_boundary(self.cursor_offset()), cx);
     }
 
+    /// Extends the selection one position to the right.
     fn select_right(&mut self, _: &SelectRight, cx: &mut ViewContext<Self>) {
         self.select_to(self.next_boundary(self.cursor_offset()), cx);
     }
 
+    /// Selects all text content.
     fn select_all(&mut self, _: &SelectAll, cx: &mut ViewContext<Self>) {
         self.move_to(0, cx);
         self.select_to(self.content.len(), cx)
     }
 
+    /// Moves the cursor to the beginning of the text.
     fn home(&mut self, _: &Home, cx: &mut ViewContext<Self>) {
         self.move_to(0, cx);
     }
 
+    /// Moves the cursor to the end of the text.
     fn end(&mut self, _: &End, cx: &mut ViewContext<Self>) {
         self.move_to(self.content.len(), cx);
     }
 
+    /// Deletes the character before the cursor or the selected text.
     fn backspace(&mut self, _: &Backspace, cx: &mut ViewContext<Self>) {
         if self.selected_range.is_empty() {
             self.select_to(self.previous_boundary(self.cursor_offset()), cx)
@@ -76,6 +115,7 @@ impl TextInput {
         self.replace_text_in_range(None, "", cx)
     }
 
+    /// Deletes the character after the cursor or the selected text.
     fn delete(&mut self, _: &Delete, cx: &mut ViewContext<Self>) {
         if self.selected_range.is_empty() {
             self.select_to(self.next_boundary(self.cursor_offset()), cx)
@@ -83,6 +123,7 @@ impl TextInput {
         self.replace_text_in_range(None, "", cx)
     }
 
+    /// Handles mouse down events for text selection.
     fn on_mouse_down(&mut self, event: &MouseDownEvent, cx: &mut ViewContext<Self>) {
         self.is_selecting = true;
 
@@ -93,25 +134,30 @@ impl TextInput {
         }
     }
 
+    /// Handles mouse up events to stop text selection.
     fn on_mouse_up(&mut self, _: &MouseUpEvent, _: &mut ViewContext<Self>) {
         self.is_selecting = false;
     }
 
+    /// Handles mouse move events to update text selection.
     fn on_mouse_move(&mut self, event: &MouseMoveEvent, cx: &mut ViewContext<Self>) {
         if self.is_selecting {
             self.select_to(self.index_for_mouse_position(event.position), cx);
         }
     }
 
+    /// Shows the character palette for special character input.
     fn show_character_palette(&mut self, _: &ShowCharacterPalette, cx: &mut ViewContext<Self>) {
         cx.show_character_palette();
     }
 
+    /// Moves the cursor to the specified offset.
     fn move_to(&mut self, offset: usize, cx: &mut ViewContext<Self>) {
         self.selected_range = offset..offset;
         cx.notify()
     }
 
+    /// Returns the current cursor offset.
     fn cursor_offset(&self) -> usize {
         if self.selection_reversed {
             self.selected_range.start
@@ -120,6 +166,7 @@ impl TextInput {
         }
     }
 
+    /// Returns the index in the text content for the given mouse position.
     fn index_for_mouse_position(&self, position: Point<Pixels>) -> usize {
         if self.content.is_empty() {
             return 0;
@@ -138,6 +185,7 @@ impl TextInput {
         line.closest_index_for_x(position.x - bounds.left())
     }
 
+    /// Extends the selection to the specified offset.
     fn select_to(&mut self, offset: usize, cx: &mut ViewContext<Self>) {
         if self.selection_reversed {
             self.selected_range.start = offset
@@ -151,6 +199,7 @@ impl TextInput {
         cx.notify()
     }
 
+    /// Converts a UTF-16 offset to a UTF-8 offset.
     fn offset_from_utf16(&self, offset: usize) -> usize {
         let mut utf8_offset = 0;
         let mut utf16_count = 0;
@@ -166,6 +215,7 @@ impl TextInput {
         utf8_offset
     }
 
+    /// Converts a UTF-8 offset to a UTF-16 offset.
     fn offset_to_utf16(&self, offset: usize) -> usize {
         let mut utf16_offset = 0;
         let mut utf8_count = 0;
@@ -181,14 +231,17 @@ impl TextInput {
         utf16_offset
     }
 
+    /// Converts a UTF-8 range to a UTF-16 range.
     fn range_to_utf16(&self, range: &Range<usize>) -> Range<usize> {
         self.offset_to_utf16(range.start)..self.offset_to_utf16(range.end)
     }
 
+    /// Converts a UTF-16 range to a UTF-8 range.
     fn range_from_utf16(&self, range_utf16: &Range<usize>) -> Range<usize> {
         self.offset_from_utf16(range_utf16.start)..self.offset_from_utf16(range_utf16.end)
     }
 
+    /// Finds the previous grapheme boundary before the given offset.
     fn previous_boundary(&self, offset: usize) -> usize {
         self.content
             .grapheme_indices(true)
@@ -197,6 +250,7 @@ impl TextInput {
             .unwrap_or(0)
     }
 
+    /// Finds the next grapheme boundary after the given offset.
     fn next_boundary(&self, offset: usize) -> usize {
         self.content
             .grapheme_indices(true)
@@ -204,6 +258,7 @@ impl TextInput {
             .unwrap_or(self.content.len())
     }
 
+    /// Resets the text input to its initial state.
     fn reset(&mut self) {
         self.content = "".into();
         self.selected_range = 0..0;
